@@ -7,7 +7,7 @@ name = 'bgen'
 version = '1.9.10'
 description = 'Package for loading data from bgen files'
 readme = 'README.md'
-requires-python = '>=3.8'
+requires-python = '>=3.9'
 authors = [
     {name = "Jeremy McRae", email = 'jmcrae@illumina.com'},
 ]

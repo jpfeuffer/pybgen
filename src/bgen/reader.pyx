@@ -573,7 +573,7 @@ cdef class BgenReader:
                   for offset in offsets]
       
       if not self.delay_parsing:
-          idx = [i for i, x in enumerate(self.positions) if x == pos]
+          idx = [i for i, x in enumerate(self.positions()) if x == pos]
           return [self[i] for i in idx]
       
       raise ValueError("can't get variant without fully loading the bgen, or indexing")

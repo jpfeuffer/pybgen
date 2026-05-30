@@ -146,3 +146,6 @@ class BgenWriter(path, n_samples, samples=[], compression='zstd' layout=2, metad
             bit_depth: how many bits to store each genotype as (1-32, default=8)
 
 ```
+
+#### S3 support design plan
+See `docs/s3-architecture.md` for the proposed modern C++ architecture for native S3-backed reading.

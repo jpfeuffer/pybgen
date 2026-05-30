@@ -6,6 +6,9 @@ on:
   schedule:
     - cron: "33 3 3 * *"
 
+permissions:
+  contents: read
+
 jobs:
   default_tests:
     name: test package
@@ -32,6 +35,55 @@ jobs:
           pip install .
           python -m unittest discover
   
+  minio_tests:
+    name: test with minio container
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    services:
+      minio:
+        image: minio/minio:latest
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+          --command "server /data"
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build and install
+        run: |
+          python -m pip install --upgrade pip
+          pip install setuptools build
+          pip install .
+          pip install minio
+
+      - name: Run Minio tests
+        env:
+          MINIO_ENDPOINT: localhost:9000
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin
+          MINIO_BUCKET: testdata
+          MINIO_SECURE: "false"
+        run: |
+          python -m unittest tests.test_minio_bgenfile -v
+
   build_wheels:
     if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}

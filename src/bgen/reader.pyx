@@ -78,6 +78,9 @@ cdef extern from 'reader.h' namespace 'bgen':
     cdef cppclass CppBgenReader:
         # declare class constructor and methods
         CppBgenReader(string path, string sample_path, bool delay_parsing) except +
+        CppBgenReader(string path, string sample_path, bool delay_parsing,
+                      string region, string endpoint, string profile,
+                      bool use_ssl, bool path_style, bool no_sign_request) except +
         void parse_all_variants()
         Variant & operator[](int idx)
         Variant & get(int idx)
@@ -390,7 +393,53 @@ cdef class BgenReader:
     cdef object index
     cdef OpenStatus is_open
     cdef uint64_t offset
-    def __cinit__(self, path, sample_path='', bool delay_parsing=False):
+    def __cinit__(self, path, sample_path='', bool delay_parsing=False,
+                  s3_region='', s3_endpoint='', s3_profile='',
+                  s3_use_ssl=True, s3_path_style=False, s3_no_sign_request=False,
+                  s3_patch=None):
+        ''' open a bgen file for reading
+        
+        Args:
+            path: path to bgen file, or an s3:// URL
+            sample_path: optional path to a .sample file
+            delay_parsing: if True, do not parse all variants on open
+            s3_region: AWS region (default: from env or us-east-1)
+            s3_endpoint: custom S3 endpoint URL (e.g. for Minio)
+            s3_profile: AWS profile name from ~/.aws/credentials
+            s3_use_ssl: whether to use SSL for S3 connections
+            s3_path_style: use path-style S3 addressing
+            s3_no_sign_request: skip request signing for public buckets
+            s3_patch: optional UPatch-like object containing S3 credentials/config.
+                      If provided, its attributes (region, endpoint, profile,
+                      access_key, secret_key, session_token, no_sign_request,
+                      use_ssl, path_style) override the individual parameters.
+        '''
+        # Extract config from UPatch object if provided
+        cdef bool _s3_use_ssl = s3_use_ssl
+        cdef bool _s3_path_style = s3_path_style
+        cdef bool _s3_no_sign_request = s3_no_sign_request
+        if s3_patch is not None:
+            if hasattr(s3_patch, 'region') and s3_patch.region:
+                s3_region = s3_patch.region
+            if hasattr(s3_patch, 'endpoint') and s3_patch.endpoint:
+                s3_endpoint = s3_patch.endpoint
+            if hasattr(s3_patch, 'profile') and s3_patch.profile:
+                s3_profile = s3_patch.profile
+            if hasattr(s3_patch, 'no_sign_request'):
+                _s3_no_sign_request = s3_patch.no_sign_request
+            if hasattr(s3_patch, 'use_ssl'):
+                _s3_use_ssl = s3_patch.use_ssl
+            if hasattr(s3_patch, 'path_style'):
+                _s3_path_style = s3_patch.path_style
+            # UPatch may carry explicit credentials via env vars
+            if hasattr(s3_patch, 'access_key') and s3_patch.access_key:
+                import os
+                os.environ['AWS_ACCESS_KEY_ID'] = str(s3_patch.access_key)
+                if hasattr(s3_patch, 'secret_key') and s3_patch.secret_key:
+                    os.environ['AWS_SECRET_ACCESS_KEY'] = str(s3_patch.secret_key)
+                if hasattr(s3_patch, 'session_token') and s3_patch.session_token:
+                    os.environ['AWS_SESSION_TOKEN'] = str(s3_patch.session_token)
+        
         if isinstance(path, Path):
             path = str(path)
         if isinstance(sample_path, Path):
@@ -416,7 +465,16 @@ cdef class BgenReader:
         
         samp = '' if sample_path == '' else f', (samples={self.sample_path.decode("utf")})'
         logging.debug(f'opening BgenFile from {self.path.decode("utf")}{samp}')
-        self.thisptr = new CppBgenReader(self.path, self.sample_path, self.delay_parsing)
+        
+        if is_s3:
+            self.thisptr = new CppBgenReader(
+                self.path, self.sample_path, self.delay_parsing,
+                s3_region.encode('utf8') if s3_region else b'',
+                s3_endpoint.encode('utf8') if s3_endpoint else b'',
+                s3_profile.encode('utf8') if s3_profile else b'',
+                _s3_use_ssl, _s3_path_style, _s3_no_sign_request)
+        else:
+            self.thisptr = new CppBgenReader(self.path, self.sample_path, self.delay_parsing)
         self.handle = IStream(<uint64_t>self.thisptr.handle)
         self.is_open = OpenStatus()
         self.offset = self.thisptr.offset

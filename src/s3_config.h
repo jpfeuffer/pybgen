@@ -46,8 +46,10 @@ struct S3Url {
 struct S3Config {
     std::string region = "us-east-1";
     std::string endpoint;       // custom endpoint override
+    std::string profile;        // AWS profile name (empty = use default chain)
     bool use_ssl = true;
     bool path_style = false;    // use path-style addressing
+    bool no_sign_request = false; // skip signing for public buckets
     int connect_timeout_ms = 5000;
     int request_timeout_ms = 30000;
     int max_retries = 3;
@@ -76,6 +78,16 @@ struct S3Config {
             std::string val(path_style);
             cfg.path_style = (val == "1" || val == "true" || val == "TRUE");
         }
+        
+        const char* no_sign = std::getenv("BGEN_S3_NO_SIGN_REQUEST");
+        if (!no_sign) no_sign = std::getenv("AWS_NO_SIGN_REQUEST");
+        if (no_sign) {
+            std::string val(no_sign);
+            cfg.no_sign_request = (val == "1" || val == "true" || val == "TRUE");
+        }
+        
+        const char* profile = std::getenv("AWS_PROFILE");
+        if (profile) cfg.profile = profile;
         
         return cfg;
     }

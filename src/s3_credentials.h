@@ -113,6 +113,30 @@ private:
     }
 };
 
+/// Anonymous credential provider for public buckets (no-sign-request)
+class AnonymousCredentialProvider : public CredentialProvider {
+public:
+    Credentials get_credentials() override {
+        // Return empty credentials; requests will not be signed
+        return Credentials{};
+    }
+    std::string name() const override { return "AnonymousCredentialProvider"; }
+    bool is_anonymous() const { return true; }
+};
+
+/// Explicit credential provider - holds credentials passed directly
+class ExplicitCredentialProvider : public CredentialProvider {
+    Credentials creds_;
+public:
+    ExplicitCredentialProvider(const std::string& access_key,
+                              const std::string& secret_key,
+                              const std::string& session_token = "")
+        : creds_{access_key, secret_key, session_token} {}
+    
+    Credentials get_credentials() override { return creds_; }
+    std::string name() const override { return "ExplicitCredentialProvider"; }
+};
+
 /// Credential provider chain - tries providers in order until one succeeds
 class CredentialChain : public CredentialProvider {
     std::vector<std::unique_ptr<CredentialProvider>> providers_;
@@ -124,6 +148,12 @@ public:
         
         providers_.push_back(std::unique_ptr<CredentialProvider>(new EnvCredentialProvider()));
         providers_.push_back(std::unique_ptr<CredentialProvider>(new FileCredentialProvider(prof)));
+    }
+    
+    explicit CredentialChain(const std::string& profile) {
+        // Chain with explicit profile selection
+        providers_.push_back(std::unique_ptr<CredentialProvider>(new EnvCredentialProvider()));
+        providers_.push_back(std::unique_ptr<CredentialProvider>(new FileCredentialProvider(profile)));
     }
     
     void add_provider(std::unique_ptr<CredentialProvider> provider) {

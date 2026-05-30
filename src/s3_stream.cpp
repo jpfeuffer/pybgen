@@ -47,12 +47,17 @@ S3StreamBuf::S3StreamBuf(const S3Url& url, const S3Config& config,
                          std::shared_ptr<CredentialProvider> credentials,
                          size_t buffer_size)
     : url_(url), config_(config), credentials_(credentials),
-      buffer_size_(buffer_size), current_pos_(0), buffer_start_(0) {
+      anonymous_(config.no_sign_request),
+      buffer_size_(buffer_size), current_pos_(0), buffer_start_(0),
+      curl_handle_(nullptr) {
     
     buffer_.resize(buffer_size_);
     
     // Initialize with empty buffer state
     setg(buffer_.data(), buffer_.data(), buffer_.data());
+    
+    // Initialize persistent curl handle
+    ensure_curl_handle();
     
     // Get file size
     file_size_ = get_file_size();
@@ -62,11 +67,37 @@ S3StreamBuf::S3StreamBuf(const S3Url& url, const S3Config& config,
     }
 }
 
-S3StreamBuf::~S3StreamBuf() {}
+S3StreamBuf::~S3StreamBuf() {
+    if (curl_handle_) {
+        curl_easy_cleanup(static_cast<CURL*>(curl_handle_));
+        curl_handle_ = nullptr;
+    }
+}
+
+void S3StreamBuf::ensure_curl_handle() {
+    if (!curl_handle_) {
+        curl_handle_ = curl_easy_init();
+        if (!curl_handle_) {
+            throw std::runtime_error("Failed to initialize cURL");
+        }
+    }
+}
 
 std::vector<std::string> S3StreamBuf::build_signed_headers(
     const std::string& method,
     const std::string& range_header) {
+    
+    std::vector<std::string> curl_headers;
+    std::string host = url_.host();
+    curl_headers.push_back("Host: " + host);
+    
+    // For anonymous (no-sign-request) mode, skip signing entirely
+    if (anonymous_) {
+        if (!range_header.empty()) {
+            curl_headers.push_back("Range: " + range_header);
+        }
+        return curl_headers;
+    }
     
     Credentials creds = credentials_->get_credentials();
     if (!creds.is_valid()) {
@@ -76,8 +107,6 @@ std::vector<std::string> S3StreamBuf::build_signed_headers(
     std::string amz_date = SigV4::get_amz_date();
     std::string date_stamp = SigV4::get_date_stamp();
     std::string payload_hash = SigV4::empty_payload_hash();
-    
-    std::string host = url_.host();
     
     std::map<std::string, std::string> headers_map;
     headers_map["host"] = host;
@@ -97,9 +126,6 @@ std::vector<std::string> S3StreamBuf::build_signed_headers(
         method, http_url, headers_map, payload_hash,
         url_.region, "s3", creds, date_stamp, amz_date);
     
-    // Build curl header list
-    std::vector<std::string> curl_headers;
-    curl_headers.push_back("Host: " + host);
     curl_headers.push_back("x-amz-content-sha256: " + payload_hash);
     curl_headers.push_back("x-amz-date: " + amz_date);
     curl_headers.push_back("Authorization: " + auth);
@@ -131,14 +157,23 @@ bool S3StreamBuf::perform_request(const std::string& url,
         
         response_body.clear();
         
-        CURL* curl = curl_easy_init();
-        if (!curl) {
-            throw std::runtime_error("Failed to initialize cURL");
-        }
+        ensure_curl_handle();
+        CURL* curl = static_cast<CURL*>(curl_handle_);
+        
+        // Reset handle state for reuse (keeps connection alive)
+        curl_easy_reset(curl);
         
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)config_.connect_timeout_ms);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)config_.request_timeout_ms);
+        
+        // Enable TCP keepalive and connection reuse
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 120L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 60L);
+        
+        // Enable cookie engine for session reuse (in-memory)
+        curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");
         
         if (head_only) {
             curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
@@ -147,6 +182,7 @@ bool S3StreamBuf::perform_request(const std::string& url,
                 curl_easy_setopt(curl, CURLOPT_HEADERDATA, content_length);
             }
         } else {
+            curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
         }
@@ -168,7 +204,6 @@ bool S3StreamBuf::perform_request(const std::string& url,
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         
         curl_slist_free_all(header_list);
-        curl_easy_cleanup(curl);
         
         if (res != CURLE_OK) {
             if (attempt == config_.max_retries) {
@@ -335,7 +370,23 @@ std::unique_ptr<S3Stream> S3Stream::open(const std::string& s3_url) {
 
 std::unique_ptr<S3Stream> S3Stream::open(const std::string& s3_url, const S3Config& config) {
     S3Url url = parse_s3_url(s3_url, config);
-    auto credentials = std::make_shared<CredentialChain>();
+    
+    std::shared_ptr<CredentialProvider> credentials;
+    if (config.no_sign_request) {
+        credentials = std::make_shared<AnonymousCredentialProvider>();
+    } else if (!config.profile.empty()) {
+        credentials = std::make_shared<CredentialChain>(config.profile);
+    } else {
+        credentials = std::make_shared<CredentialChain>();
+    }
+    
+    return std::unique_ptr<S3Stream>(new S3Stream(url, config, credentials));
+}
+
+std::unique_ptr<S3Stream> S3Stream::open(const std::string& s3_url,
+                                         const S3Config& config,
+                                         std::shared_ptr<CredentialProvider> credentials) {
+    S3Url url = parse_s3_url(s3_url, config);
     return std::unique_ptr<S3Stream>(new S3Stream(url, config, credentials));
 }
 

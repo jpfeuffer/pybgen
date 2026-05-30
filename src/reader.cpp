@@ -6,10 +6,40 @@
 namespace bgen {
 
 CppBgenReader::CppBgenReader(std::string path, std::string sample_path, bool delay_parsing) {
+  s3::S3Config config = s3::S3Config::from_env();
+  init(path, sample_path, delay_parsing, config);
+}
+
+CppBgenReader::CppBgenReader(std::string path, std::string sample_path, bool delay_parsing,
+                             std::string region, std::string endpoint, std::string profile,
+                             bool use_ssl, bool path_style, bool no_sign_request) {
+  s3::S3Config config;
+  if (!region.empty()) config.region = region;
+  else {
+    // Fall back to env
+    const char* r = std::getenv("AWS_DEFAULT_REGION");
+    if (!r) r = std::getenv("AWS_REGION");
+    if (r) config.region = r;
+  }
+  if (!endpoint.empty()) config.endpoint = endpoint;
+  else {
+    const char* e = std::getenv("AWS_ENDPOINT_URL");
+    if (!e) e = std::getenv("BGEN_S3_ENDPOINT");
+    if (e) config.endpoint = e;
+  }
+  config.profile = profile;
+  config.use_ssl = use_ssl;
+  config.path_style = path_style;
+  config.no_sign_request = no_sign_request;
+  init(path, sample_path, delay_parsing, config);
+}
+
+void CppBgenReader::init(std::string path, std::string sample_path, bool delay_parsing,
+                         const s3::S3Config& config) {
   if (s3::is_s3_url(path)) {
     // Open from S3
     is_s3 = true;
-    auto s3_stream = s3::S3Stream::open(path);
+    auto s3_stream = s3::S3Stream::open(path, config);
     handle = s3_stream.get();
     owned_handle_ = std::move(s3_stream);
   } else if (path != "/dev/stdin") {

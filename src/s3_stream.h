@@ -38,6 +38,9 @@ public:
     /// Get the total size of the remote object
     uint64_t file_size() const { return file_size_; }
     
+    /// Whether this stream uses anonymous (unsigned) requests
+    bool is_anonymous() const { return anonymous_; }
+    
 protected:
     /// Override: read more data from S3
     int_type underflow() override;
@@ -56,7 +59,7 @@ private:
     /// Get the file size via HEAD request
     uint64_t get_file_size();
     
-    /// Perform an HTTP request with retries
+    /// Perform an HTTP request with retries (reuses curl session)
     bool perform_request(const std::string& url,
                         const std::vector<std::string>& headers,
                         std::vector<char>& response_body,
@@ -64,20 +67,26 @@ private:
                         bool head_only = false,
                         uint64_t* content_length = nullptr);
     
-    /// Build signed headers for a request
+    /// Build signed headers for a request (empty for anonymous)
     std::vector<std::string> build_signed_headers(
         const std::string& method,
         const std::string& range_header = "");
     
+    /// Initialize or reset the persistent curl handle
+    void ensure_curl_handle();
+    
     S3Url url_;
     S3Config config_;
     std::shared_ptr<CredentialProvider> credentials_;
+    bool anonymous_;
     
     std::vector<char> buffer_;
     size_t buffer_size_;
     uint64_t file_size_;
     uint64_t current_pos_;    // logical position in file
     uint64_t buffer_start_;   // file offset where buffer starts
+    
+    void* curl_handle_;       // persistent CURL* handle for session reuse
 };
 
 /// An istream backed by S3, for use with the bgen reader.
@@ -97,6 +106,11 @@ public:
     /// Convenience factory: open an S3 URL with explicit config
     static std::unique_ptr<S3Stream> open(const std::string& s3_url,
                                           const S3Config& config);
+    
+    /// Convenience factory: open with explicit credentials
+    static std::unique_ptr<S3Stream> open(const std::string& s3_url,
+                                          const S3Config& config,
+                                          std::shared_ptr<CredentialProvider> credentials);
     
     /// Get the file size
     uint64_t file_size() const { return buf_->file_size(); }

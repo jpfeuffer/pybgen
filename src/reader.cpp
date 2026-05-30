@@ -1,10 +1,18 @@
 
 #include "reader.h"
+#include "s3_config.h"
+#include "s3_stream.h"
 
 namespace bgen {
 
 CppBgenReader::CppBgenReader(std::string path, std::string sample_path, bool delay_parsing) {
-  if (path != "/dev/stdin") {
+  if (s3::is_s3_url(path)) {
+    // Open from S3
+    is_s3 = true;
+    auto s3_stream = s3::S3Stream::open(path);
+    handle = s3_stream.get();
+    owned_handle_ = std::move(s3_stream);
+  } else if (path != "/dev/stdin") {
     handle = new std::ifstream(path, std::ios::in | std::ios::binary);
   } else {
     is_stdin = true;

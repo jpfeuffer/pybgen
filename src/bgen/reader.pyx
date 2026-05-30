@@ -400,10 +400,15 @@ cdef class BgenReader:
             delay_parsing = True
             path = '/dev/stdin'
         
-        if Path(path).exists() and Path(path).is_dir():
-            raise ValueError(f'bgen path is for a folder: {path}')
+        # S3 URLs bypass local path checks
+        is_s3 = isinstance(path, str) and path.startswith('s3://')
         
-        delay_parsing |= self._check_for_index(path)
+        if not is_s3 and not self.is_stdin:
+            if Path(path).exists() and Path(path).is_dir():
+                raise ValueError(f'bgen path is for a folder: {path}')
+        
+        if not is_s3:
+            delay_parsing |= self._check_for_index(path)
         
         self.path = path.encode('utf8')
         self.sample_path = sample_path.encode('utf8')

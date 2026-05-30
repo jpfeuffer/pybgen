@@ -4,6 +4,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <vector>
+#include <memory>
 
 #include "header.h"
 #include "samples.h"
@@ -13,6 +14,8 @@ namespace bgen {
 
 class CppBgenReader {
   bool is_stdin = false;
+  bool is_s3 = false;
+  std::unique_ptr<std::istream> owned_handle_;  // for S3 streams we own
 public:
   CppBgenReader(std::string path, std::string sample_path = "", bool delay_parsing = false);
   void parse_all_variants();

@@ -395,12 +395,14 @@ cdef class BgenReader:
     cdef uint64_t offset
     def __cinit__(self, path, sample_path='', bool delay_parsing=False,
                   s3_region='', s3_endpoint='', s3_profile='',
-                  s3_use_ssl=True, s3_path_style=False, s3_no_sign_request=False,
-                  s3_patch=None):
+                  s3_use_ssl=True, s3_path_style=False, s3_no_sign_request=False):
         ''' open a bgen file for reading
         
         Args:
-            path: path to bgen file, or an s3:// URL
+            path: path to bgen file, an s3:// URL string, or a UPath object.
+                  If a UPath with an S3 scheme is passed, its storage_options
+                  (key, secret, token, client_kwargs, config_kwargs) are used
+                  to configure the S3 connection.
             sample_path: optional path to a .sample file
             delay_parsing: if True, do not parse all variants on open
             s3_region: AWS region (default: from env or us-east-1)
@@ -409,36 +411,51 @@ cdef class BgenReader:
             s3_use_ssl: whether to use SSL for S3 connections
             s3_path_style: use path-style S3 addressing
             s3_no_sign_request: skip request signing for public buckets
-            s3_patch: optional UPatch-like object containing S3 credentials/config.
-                      If provided, its attributes (region, endpoint, profile,
-                      access_key, secret_key, session_token, no_sign_request,
-                      use_ssl, path_style) override the individual parameters.
         '''
-        # Extract config from UPatch object if provided
         cdef bool _s3_use_ssl = s3_use_ssl
         cdef bool _s3_path_style = s3_path_style
         cdef bool _s3_no_sign_request = s3_no_sign_request
-        if s3_patch is not None:
-            if hasattr(s3_patch, 'region') and s3_patch.region:
-                s3_region = s3_patch.region
-            if hasattr(s3_patch, 'endpoint') and s3_patch.endpoint:
-                s3_endpoint = s3_patch.endpoint
-            if hasattr(s3_patch, 'profile') and s3_patch.profile:
-                s3_profile = s3_patch.profile
-            if hasattr(s3_patch, 'no_sign_request'):
-                _s3_no_sign_request = s3_patch.no_sign_request
-            if hasattr(s3_patch, 'use_ssl'):
-                _s3_use_ssl = s3_patch.use_ssl
-            if hasattr(s3_patch, 'path_style'):
-                _s3_path_style = s3_patch.path_style
-            # UPatch may carry explicit credentials via env vars
-            if hasattr(s3_patch, 'access_key') and s3_patch.access_key:
+        
+        # Extract config from UPath storage_options if path is a UPath with S3 scheme
+        if hasattr(path, 'storage_options') and hasattr(path, 'path'):
+            opts = path.storage_options or {}
+            # Extract credentials from storage_options
+            if opts.get('key'):
                 import os
-                os.environ['AWS_ACCESS_KEY_ID'] = str(s3_patch.access_key)
-                if hasattr(s3_patch, 'secret_key') and s3_patch.secret_key:
-                    os.environ['AWS_SECRET_ACCESS_KEY'] = str(s3_patch.secret_key)
-                if hasattr(s3_patch, 'session_token') and s3_patch.session_token:
-                    os.environ['AWS_SESSION_TOKEN'] = str(s3_patch.session_token)
+                os.environ['AWS_ACCESS_KEY_ID'] = str(opts['key'])
+            if opts.get('secret'):
+                import os
+                os.environ['AWS_SECRET_ACCESS_KEY'] = str(opts['secret'])
+            if opts.get('token'):
+                import os
+                os.environ['AWS_SESSION_TOKEN'] = str(opts['token'])
+            # Extract config from storage_options
+            if opts.get('profile'):
+                s3_profile = opts['profile']
+            if opts.get('anon') or opts.get('no_sign_request'):
+                _s3_no_sign_request = True
+            # client_kwargs may contain endpoint_url, region_name
+            client_kwargs = opts.get('client_kwargs', {})
+            if client_kwargs.get('endpoint_url'):
+                endpoint = client_kwargs['endpoint_url']
+                # Strip protocol prefix for our endpoint format
+                if endpoint.startswith('http://'):
+                    s3_endpoint = endpoint[7:]
+                    _s3_use_ssl = False
+                elif endpoint.startswith('https://'):
+                    s3_endpoint = endpoint[8:]
+                    _s3_use_ssl = True
+                else:
+                    s3_endpoint = endpoint
+            if client_kwargs.get('region_name'):
+                s3_region = client_kwargs['region_name']
+            # config_kwargs may contain s3 addressing style
+            config_kwargs = opts.get('config_kwargs', {})
+            s3_config = config_kwargs.get('s3', {})
+            if s3_config.get('addressing_style') == 'path':
+                _s3_path_style = True
+            # Convert UPath to string URL
+            path = str(path)
         
         if isinstance(path, Path):
             path = str(path)

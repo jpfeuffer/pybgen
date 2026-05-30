@@ -1,9 +1,9 @@
-"""Tests for public bucket (no-sign-request) and profile-based S3 access.
+"""Tests for public bucket (no-sign-request), UPath, and profile-based S3 access.
 
 These tests verify that:
 1. BgenReader can access public S3 buckets without credentials (no_sign_request)
-2. BgenReader accepts AWS profile selection
-3. BgenReader accepts UPatch-like objects for S3 configuration
+2. BgenReader accepts UPath objects and extracts storage_options for S3 config
+3. BgenReader accepts AWS profile selection
 
 The tests use a local Minio container configured with an anonymous-read policy
 to simulate public bucket access.
@@ -13,6 +13,7 @@ import os
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -73,21 +74,33 @@ def s3_url(filename, bucket=PUBLIC_BUCKET):
     return f"s3://{bucket}/{filename}"
 
 
-class UPatch:
-    """A simple UPatch-like object that carries S3 configuration and credentials."""
+def make_upath(filename, bucket=MINIO_BUCKET, anon=False,
+               key=None, secret=None):
+    """Create a mock UPath object with storage_options for testing.
 
-    def __init__(self, region=None, endpoint=None, profile=None,
-                 access_key=None, secret_key=None, session_token=None,
-                 no_sign_request=False, use_ssl=True, path_style=False):
-        self.region = region
-        self.endpoint = endpoint
-        self.profile = profile
-        self.access_key = access_key
-        self.secret_key = secret_key
-        self.session_token = session_token
-        self.no_sign_request = no_sign_request
-        self.use_ssl = use_ssl
-        self.path_style = path_style
+    This mimics the interface of universal_pathlib.UPath with S3 scheme,
+    which carries storage_options used by fsspec/s3fs.
+    """
+    url = f"s3://{bucket}/{filename}"
+    upath = MagicMock()
+    upath.__str__ = lambda self: url
+    upath.__fspath__ = lambda self: url
+    upath.path = f"/{bucket}/{filename}"
+
+    storage_options = {}
+    if anon:
+        storage_options['anon'] = True
+    if key:
+        storage_options['key'] = key
+    if secret:
+        storage_options['secret'] = secret
+
+    endpoint_url = f"{'https' if MINIO_SECURE else 'http'}://{MINIO_ENDPOINT}"
+    storage_options['client_kwargs'] = {'endpoint_url': endpoint_url}
+    storage_options['config_kwargs'] = {'s3': {'addressing_style': 'path'}}
+
+    upath.storage_options = storage_options
+    return upath
 
 
 @unittest.skipUnless(is_minio_available(), SKIP_REASON)
@@ -175,8 +188,12 @@ class TestS3PublicBucket(unittest.TestCase):
 
 
 @unittest.skipUnless(is_minio_available(), SKIP_REASON)
-class TestS3UPatch(unittest.TestCase):
-    """Tests for UPatch object support in BgenReader."""
+class TestS3UPath(unittest.TestCase):
+    """Tests for UPath object support in BgenReader.
+
+    UPath (universal-pathlib) objects carry storage_options that contain
+    S3 credentials and configuration. BgenReader extracts these automatically.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -185,61 +202,66 @@ class TestS3UPatch(unittest.TestCase):
         upload_test_data(cls.client)
         setup_public_bucket()
 
-    def test_upatch_with_credentials(self):
-        """Can open S3 file using UPatch object with explicit credentials."""
-        patch = UPatch(
-            endpoint=MINIO_ENDPOINT,
-            access_key=MINIO_ACCESS_KEY,
-            secret_key=MINIO_SECRET_KEY,
-            use_ssl=MINIO_SECURE,
-            path_style=True,
-            region="us-east-1",
+    def test_upath_with_credentials(self):
+        """Can open S3 file using a UPath object with explicit credentials."""
+        upath = make_upath(
+            "example.16bits.zstd.bgen",
+            bucket=MINIO_BUCKET,
+            key=MINIO_ACCESS_KEY,
+            secret=MINIO_SECRET_KEY,
         )
-        path = s3_url("example.16bits.zstd.bgen", bucket=MINIO_BUCKET)
-        with BgenReader(path, s3_patch=patch) as bfile:
+        with BgenReader(upath) as bfile:
             self.assertEqual(len(bfile.samples), 500)
             var = next(bfile)
             self.assertEqual(var.rsid, self.gen_data[0].rsid)
 
-    def test_upatch_no_sign_request(self):
-        """Can open public bucket using UPatch with no_sign_request."""
+    def test_upath_anonymous(self):
+        """Can open public bucket using a UPath with anon=True."""
         env_backup = {}
         for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]:
             env_backup[key] = os.environ.pop(key, None)
 
         try:
-            patch = UPatch(
-                endpoint=MINIO_ENDPOINT,
-                no_sign_request=True,
-                use_ssl=MINIO_SECURE,
-                path_style=True,
+            upath = make_upath(
+                "example.16bits.zstd.bgen",
+                bucket=PUBLIC_BUCKET,
+                anon=True,
             )
-            path = s3_url("example.16bits.zstd.bgen")
-            with BgenReader(path, s3_patch=patch) as bfile:
+            with BgenReader(upath) as bfile:
                 self.assertEqual(len(bfile.samples), 500)
         finally:
             for key, val in env_backup.items():
                 if val is not None:
                     os.environ[key] = val
 
-    def test_upatch_overrides_env(self):
-        """UPatch settings override environment variables."""
+    def test_upath_reads_genotypes(self):
+        """Genotype data is correct when using UPath with credentials."""
+        upath = make_upath(
+            "example.16bits.zstd.bgen",
+            bucket=MINIO_BUCKET,
+            key=MINIO_ACCESS_KEY,
+            secret=MINIO_SECRET_KEY,
+        )
+        with BgenReader(upath) as bfile:
+            for var, g in zip(bfile, self.gen_data):
+                self.assertEqual(g, var)
+                self.assertTrue(arrays_equal(g.probabilities, var.probabilities, 16))
+
+    def test_upath_overrides_env(self):
+        """UPath storage_options override environment variables."""
         # Set wrong credentials in env
         os.environ["AWS_ACCESS_KEY_ID"] = "wrong_key"
         os.environ["AWS_SECRET_ACCESS_KEY"] = "wrong_secret"
         os.environ["BGEN_S3_ENDPOINT"] = "wrong_endpoint:9999"
 
         try:
-            patch = UPatch(
-                endpoint=MINIO_ENDPOINT,
-                access_key=MINIO_ACCESS_KEY,
-                secret_key=MINIO_SECRET_KEY,
-                use_ssl=MINIO_SECURE,
-                path_style=True,
-                region="us-east-1",
+            upath = make_upath(
+                "example.16bits.zstd.bgen",
+                bucket=MINIO_BUCKET,
+                key=MINIO_ACCESS_KEY,
+                secret=MINIO_SECRET_KEY,
             )
-            path = s3_url("example.16bits.zstd.bgen", bucket=MINIO_BUCKET)
-            with BgenReader(path, s3_patch=patch) as bfile:
+            with BgenReader(upath) as bfile:
                 self.assertEqual(len(bfile.samples), 500)
         finally:
             os.environ.pop("AWS_ACCESS_KEY_ID", None)

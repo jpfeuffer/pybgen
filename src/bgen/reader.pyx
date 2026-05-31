@@ -78,6 +78,9 @@ cdef extern from 'reader.h' namespace 'bgen':
     cdef cppclass CppBgenReader:
         # declare class constructor and methods
         CppBgenReader(string path, string sample_path, bool delay_parsing) except +
+        CppBgenReader(string path, string sample_path, bool delay_parsing,
+                      string region, string endpoint, string profile,
+                      bool use_ssl, bool path_style, bool no_sign_request) except +
         void parse_all_variants()
         Variant & operator[](int idx)
         Variant & get(int idx)
@@ -390,7 +393,93 @@ cdef class BgenReader:
     cdef object index
     cdef OpenStatus is_open
     cdef uint64_t offset
-    def __cinit__(self, path, sample_path='', bool delay_parsing=False):
+    def __cinit__(self, path, sample_path='', bool delay_parsing=False,
+                  s3_region='', s3_endpoint='', s3_profile='',
+                  s3_use_ssl=None, s3_path_style=None, s3_no_sign_request=None):
+        ''' open a bgen file for reading
+        
+        Args:
+            path: path to bgen file, an s3:// URL string, or a UPath object.
+                  If a UPath with an S3 scheme is passed, its storage_options
+                  (key, secret, token, client_kwargs, config_kwargs) are used
+                  to configure the S3 connection.
+            sample_path: optional path to a .sample file
+            delay_parsing: if True, do not parse all variants on open
+            s3_region: AWS region (default: from env or us-east-1)
+            s3_endpoint: custom S3 endpoint URL (e.g. for Minio)
+            s3_profile: AWS profile name from ~/.aws/credentials
+            s3_use_ssl: whether to use SSL for S3 connections (default: from env BGEN_S3_USE_SSL, else True)
+            s3_path_style: use path-style S3 addressing (default: from env BGEN_S3_PATH_STYLE, else False)
+            s3_no_sign_request: skip request signing for public buckets (default: from env BGEN_S3_NO_SIGN_REQUEST, else False)
+        '''
+        import os as _os
+
+        # Resolve s3_use_ssl: explicit arg > env var > default True
+        if s3_use_ssl is None:
+            _env = _os.environ.get("BGEN_S3_USE_SSL")
+            _py_use_ssl = (_env.lower() in ("1", "true")) if _env is not None else True
+        else:
+            _py_use_ssl = s3_use_ssl is not False and s3_use_ssl != 0
+
+        # Resolve s3_path_style: explicit arg > env var > default False
+        if s3_path_style is None:
+            _env = _os.environ.get("BGEN_S3_PATH_STYLE") or _os.environ.get("AWS_S3_FORCE_PATH_STYLE")
+            _py_path_style = (_env.lower() in ("1", "true")) if _env is not None else False
+        else:
+            _py_path_style = s3_path_style is not False and s3_path_style != 0
+
+        # Resolve s3_no_sign_request: explicit arg > env var > default False
+        if s3_no_sign_request is None:
+            _env = _os.environ.get("BGEN_S3_NO_SIGN_REQUEST") or _os.environ.get("AWS_NO_SIGN_REQUEST")
+            _py_no_sign_request = (_env.lower() in ("1", "true")) if _env is not None else False
+        else:
+            _py_no_sign_request = s3_no_sign_request is not False and s3_no_sign_request != 0
+
+        cdef bool _s3_use_ssl = _py_use_ssl
+        cdef bool _s3_path_style = _py_path_style
+        cdef bool _s3_no_sign_request = _py_no_sign_request
+        
+        # Extract config from UPath storage_options if path is a UPath with S3 scheme
+        if hasattr(path, 'storage_options') and hasattr(path, 'path'):
+            opts = path.storage_options or {}
+            # Extract credentials from storage_options
+            if opts.get('key'):
+                import os
+                os.environ['AWS_ACCESS_KEY_ID'] = str(opts['key'])
+            if opts.get('secret'):
+                import os
+                os.environ['AWS_SECRET_ACCESS_KEY'] = str(opts['secret'])
+            if opts.get('token'):
+                import os
+                os.environ['AWS_SESSION_TOKEN'] = str(opts['token'])
+            # Extract config from storage_options
+            if opts.get('profile'):
+                s3_profile = opts['profile']
+            if opts.get('anon') or opts.get('no_sign_request'):
+                _s3_no_sign_request = True
+            # client_kwargs may contain endpoint_url, region_name
+            client_kwargs = opts.get('client_kwargs', {})
+            if client_kwargs.get('endpoint_url'):
+                endpoint = client_kwargs['endpoint_url']
+                # Strip protocol prefix for our endpoint format
+                if endpoint.startswith('http://'):
+                    s3_endpoint = endpoint[7:]
+                    _s3_use_ssl = False
+                elif endpoint.startswith('https://'):
+                    s3_endpoint = endpoint[8:]
+                    _s3_use_ssl = True
+                else:
+                    s3_endpoint = endpoint
+            if client_kwargs.get('region_name'):
+                s3_region = client_kwargs['region_name']
+            # config_kwargs may contain s3 addressing style
+            config_kwargs = opts.get('config_kwargs', {})
+            s3_config = config_kwargs.get('s3', {})
+            if s3_config.get('addressing_style') == 'path':
+                _s3_path_style = True
+            # Convert UPath to string URL
+            path = str(path)
+        
         if isinstance(path, Path):
             path = str(path)
         if isinstance(sample_path, Path):
@@ -400,10 +489,15 @@ cdef class BgenReader:
             delay_parsing = True
             path = '/dev/stdin'
         
-        if Path(path).exists() and Path(path).is_dir():
-            raise ValueError(f'bgen path is for a folder: {path}')
+        # S3 URLs bypass local path checks
+        is_s3 = isinstance(path, str) and path.startswith('s3://')
         
-        delay_parsing |= self._check_for_index(path)
+        if not is_s3 and not self.is_stdin:
+            if Path(path).exists() and Path(path).is_dir():
+                raise ValueError(f'bgen path is for a folder: {path}')
+        
+        if not is_s3:
+            delay_parsing |= self._check_for_index(path)
         
         self.path = path.encode('utf8')
         self.sample_path = sample_path.encode('utf8')
@@ -411,7 +505,16 @@ cdef class BgenReader:
         
         samp = '' if sample_path == '' else f', (samples={self.sample_path.decode("utf")})'
         logging.debug(f'opening BgenFile from {self.path.decode("utf")}{samp}')
-        self.thisptr = new CppBgenReader(self.path, self.sample_path, self.delay_parsing)
+        
+        if is_s3:
+            self.thisptr = new CppBgenReader(
+                self.path, self.sample_path, self.delay_parsing,
+                s3_region.encode('utf8') if s3_region else b'',
+                s3_endpoint.encode('utf8') if s3_endpoint else b'',
+                s3_profile.encode('utf8') if s3_profile else b'',
+                _s3_use_ssl, _s3_path_style, _s3_no_sign_request)
+        else:
+            self.thisptr = new CppBgenReader(self.path, self.sample_path, self.delay_parsing)
         self.handle = IStream(<uint64_t>self.thisptr.handle)
         self.is_open = OpenStatus()
         self.offset = self.thisptr.offset

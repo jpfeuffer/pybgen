@@ -1,10 +1,11 @@
 name: bgen
 
-on: 
+on:
   push:
   pull_request:
-  schedule:
-    - cron: "33 3 3 * *"
+  
+permissions:
+  contents: read
 
 jobs:
   default_tests:
@@ -25,13 +26,119 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install curl openssl
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows curl:x64-windows
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          echo "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+          echo "CURL_ROOT=$root" >> $env:GITHUB_ENV
+          echo "$root\bin" >> $env:GITHUB_PATH
+
       - name: Build
+        if: runner.os != 'Windows'
         run: |
           python -m pip install --upgrade pip
           pip install setuptools build
           pip install .
           python -m unittest discover
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install delvewheel
+          pip wheel . -w dist
+          $whl = (Get-Item dist\bgen*.whl).FullName
+          delvewheel repair $whl -w wheelhouse --add-path "$env:CURL_ROOT\bin"
+          $repaired = (Get-Item wheelhouse\bgen*.whl).FullName
+          pip install $repaired
+          python -m unittest discover
   
+  minio_tests:
+    name: test with minio container
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build and install
+        run: |
+          python -m pip install --upgrade pip
+          pip install setuptools build
+          sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+          pip install .
+          pip install minio
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          python - <<'PY'
+          import time
+          import urllib.request
+
+          for _ in range(60):
+              try:
+                  urllib.request.urlopen("http://localhost:9000/minio/health/ready", timeout=2).read()
+                  break
+              except Exception:
+                  time.sleep(2)
+          else:
+              raise SystemExit("MinIO did not become ready")
+          PY
+
+      - name: Run Minio tests
+        env:
+          MINIO_ENDPOINT: localhost:9000
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin
+          MINIO_BUCKET: testdata
+          MINIO_SECURE: "false"
+        run: |
+          python -m unittest tests.test_minio_bgenfile -v
+
+      - name: Run S3 native tests
+        env:
+          MINIO_ENDPOINT: localhost:9000
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin
+          MINIO_BUCKET: testdata
+          MINIO_SECURE: "false"
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
+          BGEN_S3_ENDPOINT: localhost:9000
+          BGEN_S3_USE_SSL: "false"
+          BGEN_S3_PATH_STYLE: "true"
+        run: |
+          python -m unittest tests.test_s3_bgenfile -v
+
   build_wheels:
     if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
@@ -44,6 +151,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: true
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows curl:x64-windows
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          echo "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+          echo "CURL_ROOT=$root" >> $env:GITHUB_ENV
+          echo "$root\bin" >> $env:GITHUB_PATH
       
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.2.1
@@ -53,6 +170,8 @@ jobs:
           CIBW_TEST_COMMAND: "python -m unittest discover --verbose -s {project}"
           CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux2014_x86_64:latest
           CIBW_ARCHS: native
+          CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair -w {dest_dir} {wheel}"
 
       - uses: actions/upload-artifact@v4
         with:

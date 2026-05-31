@@ -33,6 +33,7 @@ elif sys.platform == "win32":
     EXTRA_COMPILE_ARGS += [
         '/std:c++17', '/O2',
         '/D_CRT_SECURE_NO_WARNINGS',  # silence getenv deprecation warnings
+        '/DNOMINMAX',  # prevent windows.h from defining min/max macros (conflicts with std::min/max)
         '/wd4244',  # suppress uint64_t->long conversion warnings (Cython-generated)
         '/wd4551',  # suppress "function call missing argument list" (Cython-generated)
     ]

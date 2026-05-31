@@ -459,11 +459,17 @@ cdef class BgenReader:
       else:
           return self.thisptr.header.nvariants
     
-    def __getitem__(self, int idx):
-        ''' pull out a Variant by index position
+    def __getitem__(self, idx):
+        ''' pull out a Variant by index position, or a list of Variants by slice
         '''
         if not self.is_open == True:
             raise ValueError('bgen file is closed')
+        
+        if isinstance(idx, slice):
+            return [self[i] for i in range(*idx.indices(len(self)))]
+        
+        if idx < 0:
+            idx += len(self)
         
         if idx >= len(self) or idx < 0:
             raise IndexError(f'cannot get Variant at index: {idx}')

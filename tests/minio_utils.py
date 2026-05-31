@@ -9,9 +9,6 @@ import os
 import tempfile
 from pathlib import Path
 
-from minio import Minio
-from minio.error import S3Error
-
 # Default Minio connection settings (matching docker-compose / CI service)
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
@@ -22,6 +19,7 @@ MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
 
 def get_minio_client():
     """Create and return a Minio client instance."""
+    from minio import Minio
     return Minio(
         MINIO_ENDPOINT,
         access_key=MINIO_ACCESS_KEY,

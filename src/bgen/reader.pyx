@@ -395,7 +395,7 @@ cdef class BgenReader:
     cdef uint64_t offset
     def __cinit__(self, path, sample_path='', bool delay_parsing=False,
                   s3_region='', s3_endpoint='', s3_profile='',
-                  s3_use_ssl=True, s3_path_style=False, s3_no_sign_request=False):
+                  s3_use_ssl=None, s3_path_style=None, s3_no_sign_request=None):
         ''' open a bgen file for reading
         
         Args:
@@ -408,13 +408,36 @@ cdef class BgenReader:
             s3_region: AWS region (default: from env or us-east-1)
             s3_endpoint: custom S3 endpoint URL (e.g. for Minio)
             s3_profile: AWS profile name from ~/.aws/credentials
-            s3_use_ssl: whether to use SSL for S3 connections
-            s3_path_style: use path-style S3 addressing
-            s3_no_sign_request: skip request signing for public buckets
+            s3_use_ssl: whether to use SSL for S3 connections (default: from env BGEN_S3_USE_SSL, else True)
+            s3_path_style: use path-style S3 addressing (default: from env BGEN_S3_PATH_STYLE, else False)
+            s3_no_sign_request: skip request signing for public buckets (default: from env BGEN_S3_NO_SIGN_REQUEST, else False)
         '''
-        cdef bool _s3_use_ssl = s3_use_ssl
-        cdef bool _s3_path_style = s3_path_style
-        cdef bool _s3_no_sign_request = s3_no_sign_request
+        import os as _os
+
+        # Resolve s3_use_ssl: explicit arg > env var > default True
+        if s3_use_ssl is None:
+            _env = _os.environ.get("BGEN_S3_USE_SSL")
+            _py_use_ssl = (_env.lower() in ("1", "true")) if _env is not None else True
+        else:
+            _py_use_ssl = s3_use_ssl is not False and s3_use_ssl != 0
+
+        # Resolve s3_path_style: explicit arg > env var > default False
+        if s3_path_style is None:
+            _env = _os.environ.get("BGEN_S3_PATH_STYLE") or _os.environ.get("AWS_S3_FORCE_PATH_STYLE")
+            _py_path_style = (_env.lower() in ("1", "true")) if _env is not None else False
+        else:
+            _py_path_style = s3_path_style is not False and s3_path_style != 0
+
+        # Resolve s3_no_sign_request: explicit arg > env var > default False
+        if s3_no_sign_request is None:
+            _env = _os.environ.get("BGEN_S3_NO_SIGN_REQUEST") or _os.environ.get("AWS_NO_SIGN_REQUEST")
+            _py_no_sign_request = (_env.lower() in ("1", "true")) if _env is not None else False
+        else:
+            _py_no_sign_request = s3_no_sign_request is not False and s3_no_sign_request != 0
+
+        cdef bool _s3_use_ssl = _py_use_ssl
+        cdef bool _s3_path_style = _py_path_style
+        cdef bool _s3_no_sign_request = _py_no_sign_request
         
         # Extract config from UPath storage_options if path is a UPath with S3 scheme
         if hasattr(path, 'storage_options') and hasattr(path, 'path'):

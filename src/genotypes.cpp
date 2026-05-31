@@ -31,6 +31,10 @@ namespace bgen {
 // order to allow for looking up values for the minor allele dosage, which can
 // be up to 2.0 if a sample contains both copies are of the minor allele
 // (2.0=255 + 255).
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4305)  // truncation from 'double' to 'float' for literal initializers
+#endif
 const float lut8[511] = {0.0000000, 0.0039216, 0.0078431, 0.0117647, 0.0156863, 0.0196078,
   0.0235294, 0.0274510, 0.0313725, 0.0352941, 0.0392157, 0.0431373, 0.0470588,
   0.0509804, 0.0549020, 0.0588235, 0.0627451, 0.0666667, 0.0705882, 0.0745098,
@@ -105,6 +109,9 @@ const float lut8[511] = {0.0000000, 0.0039216, 0.0078431, 0.0117647, 0.0156863, 
   1.9450980, 1.9490196, 1.9529412, 1.9568627, 1.9607843, 1.9647059, 1.9686275,
   1.9725490, 1.9764706, 1.9803922, 1.9843137, 1.9882353, 1.9921569, 1.9960784,
   2.0000000};
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 // uncompress a char array with zlib
 static void zlib_uncompress(char * input, int compressed_len, char * decompressed, int decompressed_len) {

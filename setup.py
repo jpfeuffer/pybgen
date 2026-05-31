@@ -28,7 +28,20 @@ elif sys.platform == "darwin":
         "-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib",
         ]
 elif sys.platform == "win32":
-    EXTRA_COMPILE_ARGS += ['/std:c++14', '/O2']
+    openssl_root = os.environ.get("OPENSSL_ROOT_DIR", "")
+    curl_root = os.environ.get("CURL_ROOT", openssl_root)
+    EXTRA_COMPILE_ARGS += [
+        '/std:c++17', '/O2',
+        '/D_CRT_SECURE_NO_WARNINGS',  # silence getenv deprecation warnings
+        '/wd4244',  # suppress uint64_t->long conversion warnings (Cython-generated)
+        '/wd4551',  # suppress "function call missing argument list" (Cython-generated)
+    ]
+    if openssl_root:
+        EXTRA_COMPILE_ARGS.append(f'/I{openssl_root}\\include')
+        EXTRA_LINK_ARGS.append(f'/LIBPATH:{openssl_root}\\lib')
+    if curl_root and curl_root != openssl_root:
+        EXTRA_COMPILE_ARGS.append(f'/I{curl_root}\\include')
+        EXTRA_LINK_ARGS.append(f'/LIBPATH:{curl_root}\\lib')
 
 if platform.machine() == 'x86_64' and sys.platform != "darwin":
     EXTRA_COMPILE_ARGS += ['-mavx', '-mavx2']
@@ -91,6 +104,8 @@ def build_zstd():
         (folder / 'legacy').glob('*.c'),  # TODO: drop some legacy versions
     )
     extra_compile_args = ['-std=gnu11', '-fPIC', '-O2']
+    if sys.platform == 'win32':
+        extra_compile_args = ['/O2']
     
     # newer zstd versions have an asm file, which needs to be to compiled and
     # used as a library for full zstd compilation.
@@ -108,6 +123,12 @@ def build_zstd():
 zlib_dir, zlib = build_zlib()
 zstd = build_zstd()
 
+# Library names differ between MSVC (Windows) and GCC/Clang (Linux/macOS)
+if sys.platform == 'win32':
+    reader_libraries = ['libssl', 'libcrypto', 'libcurl']
+else:
+    reader_libraries = ['curl', 'ssl', 'crypto']
+
 extensions = [
     Extension('bgen.reader',
         extra_compile_args=EXTRA_COMPILE_ARGS,
@@ -123,7 +144,7 @@ extensions = [
             'src/s3_stream.cpp'],
         extra_objects=zstd + zlib,
         include_dirs=['src', 'src/zstd/lib', zlib_dir],
-        libraries=['curl', 'ssl', 'crypto'],
+        libraries=reader_libraries,
         language='c++'),
     Extension('bgen.writer',
         extra_compile_args=EXTRA_COMPILE_ARGS,
@@ -141,5 +162,4 @@ extensions = [
 setup(
     package_dir={'': 'src'},
     ext_modules=cythonize(extensions),
-    test_loader='unittest:TestLoader',
     )

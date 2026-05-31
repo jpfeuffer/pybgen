@@ -47,10 +47,24 @@ jobs:
           echo "$root\bin" >> $env:GITHUB_PATH
 
       - name: Build
+        if: runner.os != 'Windows'
         run: |
           python -m pip install --upgrade pip
           pip install setuptools build
           pip install .
+          python -m unittest discover
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install delvewheel
+          pip wheel . -w dist
+          $whl = (Get-Item dist\bgen*.whl).FullName
+          delvewheel repair $whl -w wheelhouse --add-path "$env:CURL_ROOT\bin"
+          $repaired = (Get-Item wheelhouse\bgen*.whl).FullName
+          pip install $repaired
           python -m unittest discover
   
   minio_tests:
@@ -137,6 +151,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: true
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows curl:x64-windows
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          echo "OPENSSL_ROOT_DIR=$root" >> $env:GITHUB_ENV
+          echo "CURL_ROOT=$root" >> $env:GITHUB_ENV
+          echo "$root\bin" >> $env:GITHUB_PATH
       
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.2.1
@@ -146,6 +170,8 @@ jobs:
           CIBW_TEST_COMMAND: "python -m unittest discover --verbose -s {project}"
           CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux2014_x86_64:latest
           CIBW_ARCHS: native
+          CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair -w {dest_dir} {wheel}"
 
       - uses: actions/upload-artifact@v4
         with:

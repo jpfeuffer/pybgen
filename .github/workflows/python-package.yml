@@ -1,11 +1,9 @@
 name: bgen
 
-'on':
+on:
   push:
   pull_request:
-  schedule:
-    - cron: "33 3 3 * *"
-
+  
 permissions:
   contents: read
 
